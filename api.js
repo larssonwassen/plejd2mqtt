@@ -9,7 +9,7 @@ API_SITE_LIST_URL = 'functions/getSiteList';
 API_SITE_DETAILS_URL = 'functions/getSiteById';
 
 // #region logging
-let debug = '';
+let debug = 'console';
 
 const getLogger = () => {
   const consoleLogger = msg => console.log('plejd-api', msg);
@@ -303,6 +303,7 @@ class PlejdApi extends EventEmitter {
     switch (parseInt(hardwareId)) {
       case 1:
       case 11:
+      case 14:
         return { name: "DIM-01", type: 'light', dimmable: true };
       case 2:
         return { name: "DIM-02", type: 'light', dimmable: true };
@@ -316,31 +317,19 @@ class PlejdApi extends EventEmitter {
         return { name: "WPH-01", type: 'switch', dimmable: false };
       case 7:
         return { name: "REL-01", type: 'switch', dimmable: false };
-      case 8:
-      case 9:
-        // Unknown
-        return { name: "-unknown-", type: 'light', dimmable: false };
-      case 10:
-        return { name: "-unknown-", type: 'light', dimmable: false };
-      case 12:
-        // Unknown
-        return { name: "-unknown-", type: 'light', dimmable: false };
+      
       case 13:
         return { name: "Generic", type: 'light', dimmable: false };
-      case 14:
-      case 15:
-      case 16:
-        // Unknown
-        return { name: "-unknown-", type: 'light', dimmable: false };
       case 17:
         return { name: "REL-01", type: 'switch', dimmable: false };
       case 18:
         return { name: "REL-02", type: 'switch', dimmable: false };
-      case 19:
-        // Unknown
-        return { name: "-unknown-", type: 'light', dimmable: false };
+      case 8:
       case 20:
         return { name: "SPR-01", type: 'switch', dimmable: false };
+      default:
+	logger(`HW-id ${hardwareId} is unknown`);
+	return { name: "-unknown-", type: 'light', dimmable: false };
     }
   }
 }
