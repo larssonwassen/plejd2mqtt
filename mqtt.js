@@ -5,7 +5,7 @@ const _ = require('lodash');
 const startTopic = 'homeassistant/status';
 
 // #region logging
-let debug = '';
+let debug = 'console';
 
 const getLogger = () => {
   const consoleLogger = msg => console.log('plejd-mqtt', msg);
@@ -21,49 +21,82 @@ const logger = getLogger();
 // #region discovery
 
 const discoveryPrefix = 'homeassistant';
-const nodeId = 'plejd';
 
-const getSubscribePath = () => `${discoveryPrefix}/+/${nodeId}/#`;
-const getPath = ({ id, type }) =>
-  `${discoveryPrefix}/${type}/${nodeId}/${id}`;
-const getConfigPath = plug => `${getPath(plug)}/config`;
-const getStateTopic = plug => `${getPath(plug)}/state`;
-const getAvailabilityTopic = plug => `${getPath(plug)}/availability`;
-const getCommandTopic = plug => `${getPath(plug)}/set`;
+const getSubscribePath = () => 'homeassistant/+/plejd/#';
+
+const getPath = ({ id, type }) => `homeassistant/${type}/plejd/${id}`;
+const getConfigPath = (plug) => `${getPath(plug)}/config`;
+const getStateTopic = (device) => `${getPath(device)}/state`
+const getCommandTopic = (device) => `${getPath(device)}/set`
+const getAvailabilityTopic = (device) => `${getPath(device)}/availability`
 const getSceneEventTopic = () => `plejd/event/scene`;
 const getSettingsTopic = () => `plejd/settings`;
 
-const getDiscoveryPayload = device => ({
-  schema: 'json',
-  name: device.name,
-  unique_id: `light.plejd.${device.name.toLowerCase().replace(/ /g, '')}`,
-  state_topic: getStateTopic(device),
-  command_topic: getCommandTopic(device),
-  availability_topic: getAvailabilityTopic(device),
-  optimistic: false,
-  brightness: `${device.dimmable}`,
-  device: {
-    identifiers: device.serialNumber + '_' + device.id,
-    manufacturer: 'Plejd',
-    model: device.typeName,
-    name: device.name,
-    sw_version: device.version
+const getDiscoveryPayload = device => {
+  const nameParts = []
+  if (device.room?.title) {
+    nameParts.push(device.room.title)
   }
-});
+  nameParts.push(device.name)
+  const name = nameParts.join(' ')
 
-const getSwitchPayload = device => ({
-  name: device.name,
-  state_topic: getStateTopic(device),
-  command_topic: getCommandTopic(device),
-  optimistic: false,
-  device: {
-    identifiers: device.serialNumber + '_' + device.id,
-    manufacturer: 'Plejd',
-    model: device.typeName,
-    name: device.name,
-    sw_version: device.version
+  if (device.type == 'scene') {
+    return {
+      schema: 'json',
+      name,
+      unique_id: `plejd.scene.${device.id}`,
+      object_id: `plejd_scene_${device.id}`,
+      command_topic: getCommandTopic(device),
+      availability: {
+        topic: getAvailabilityTopic(device),
+      },
+      optimistic: false,
+    }
   }
-});
+
+  const payload = {
+    schema: 'json',
+    name,
+    unique_id: `plejd.${device.serialNumber}.${device.outputIndex}`,
+    object_id: `plejd_${device.serialNumber}_${device.outputIndex}`,
+    state_topic: getStateTopic(device),
+    command_topic: getCommandTopic(device),
+    availability: {
+      topic: getAvailabilityTopic(device),
+    },
+    optimistic: false,
+    device: {
+      identifiers: device.serialNumber,
+      manufacturer: 'Plejd',
+      model: device.typeName,
+      name: device.serialNumber,
+      sw_version: device.version,
+      suggested_area: device.room?.title,
+    }
+  }
+  if (device.type === 'switch') {
+    payload.value_template = '{{ value_json.state }}'
+  } else {
+    payload.brightness_value_template = '{{ value_json.brightness }}'
+    payload.state_value_template = '{{ value_json.state }}'
+    payload.brightness = device.dimmable
+  }
+  return payload
+};
+
+// const getSwitchPayload = device => ({
+//   name: device.room?.title ? `${device.room.title} ${device.name}` : device.name,
+//   state_topic: getStateTopic(device),
+//   command_topic: getCommandTopic(device),
+//   optimistic: false,
+//   device: {
+//     identifiers: device.serialNumber + '_' + device.id,
+//     manufacturer: 'Plejd',
+//     model: device.typeName,
+//     name: device.name,
+//     sw_version: device.version
+//   }
+// });
 
 // #endregion
 
@@ -123,12 +156,9 @@ class MqttClient extends EventEmitter {
       if (topic === startTopic && message.toString() === "online") {
         logger('home assistant has started. lets do discovery.');
         setTimeout(() => self.emit('connected'), 2000);
-      }
-      else if (topic === getSettingsTopic()) {
+      } else if (topic === getSettingsTopic()) {
         self.emit('settingsChanged', command);
-      }
-
-      if (_.includes(topic, 'set')) {
+      } else if (_.includes(topic, 'set')) {
         const device = self.devices.find(x => getCommandTopic(x) === topic);
         self.emit('stateChanged', device, command);
       }
@@ -171,7 +201,7 @@ class MqttClient extends EventEmitter {
     devices.forEach((device) => {
       logger(`sending discovery for ${device.name}`);
 
-      let payload = device.type === 'switch' ? getSwitchPayload(device) : getDiscoveryPayload(device);
+      let payload = getDiscoveryPayload(device);
       console.log(`plejd-mqtt: discovered ${device.type} (${device.typeName}) named ${device.name} with PID ${device.id}.`);
 
       self.deviceMap[device.id] = payload.unique_id;
@@ -180,16 +210,11 @@ class MqttClient extends EventEmitter {
         getConfigPath(device),
         JSON.stringify(payload)
       );
-      setTimeout(() => {
-        self.client.publish(
-          getAvailabilityTopic(device),
-          "online"
-        );
-      }, 2000);
+      setTimeout(() => self.client.publish(getAvailabilityTopic(device), 'online'), 2000);
     });
   }
 
-  updateState(deviceId, data) {
+  updateState(deviceId, data, deviceInitiated) {
     const device = this.devices.find(x => x.id === deviceId);
 
     if (!device) {
@@ -197,43 +222,26 @@ class MqttClient extends EventEmitter {
       return;
     }
 
-    logger('updating state for ' + device.name + ': ' + data.state);
+    const state = data.state == 1 ? 'ON' : 'OFF';
     let payload = null;
-
     if (device.type === 'switch') {
-      payload = data.state === 1 ? 'ON' : 'OFF';
-    }
-    else {
-      if (device.dimmable) {
-        payload = {
-          state: data.state === 1 ? 'ON' : 'OFF',
-          brightness: data.brightness
-        }
-      }
-      else {
-        payload = {
-          state: data.state === 1 ? 'ON' : 'OFF'
-        }
-      }
-
-      payload = JSON.stringify(payload);
+      payload = state;
+    } else if (device.dimmable) {
+      payload = JSON.stringify({ state, brightness: data.brightness });
+    } else {
+      payload = JSON.stringify({ state });
     }
 
-    this.client.publish(
-      getStateTopic(device),
-      payload
-    );
-    this.client.publish(
-      getAvailabilityTopic(device),
-      "online"
-    );
+    logger(`Device ${deviceId} (${device.room?.title} ${device.name}) updateState: ${payload}`);
+    this.client.publish(getStateTopic(device), payload);
+
+    if (deviceInitiated) {
+      this.client.publish(getAvailabilityTopic(device), 'online');
+    }
   }
 
   sceneTriggered(scene) {
-    this.client.publish(
-      getSceneEventTopic(),
-      JSON.stringify({ scene: scene })
-    );
+    this.client.publish(getSceneEventTopic(), JSON.stringify({ scene }));
   }
 }
 

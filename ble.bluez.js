@@ -4,7 +4,7 @@ const xor = require('buffer-xor');
 const _ = require('lodash');
 const EventEmitter = require('events');
 
-let debug = '';
+let debug = 'console';
 
 const getLogger = () => {
   const consoleLogger = msg => console.log('plejd-ble', msg);
@@ -235,86 +235,34 @@ class PlejdService extends EventEmitter {
     }
   }
 
-  turnOn(id, command) {
-    logger('turning on ' + id + ' at brightness ' + (!command.brightness ? 255 : command.brightness));
-    const brightness = command.brightness ? command.brightness : 0;
-
-    if (command.transition) {
-      // we have a transition time, split the target brightness
-      // into pieces spread of the transition time
-      const steps = command.transition * 2;
-      const brightnessStep = brightness / steps;
-
-      let i = 0;
-      const transitionRef = setInterval(() => {
-        let currentBrightness = parseInt((brightnessStep * i) + 1);
-        if (currentBrightness > 254) {
-          currentBrightness = 254;
-        }
-
-        this._turnOn(id, currentBrightness);
-
-        if (i >= steps) {
-          clearInterval(transitionRef);
-        }
-
-        i++;
-      }, 400);
-    } else {
-      this._turnOn(id, brightness);
+  createPayload(deviceId, cmd, data = null) {
+    let payloadStr = (deviceId).toString(16).padStart(2, '0') + cmd
+    if (data != null) {
+      payloadStr += data.toString(16).padStart(4, '0')
     }
+    return Buffer.from(payloadStr, 'hex');
   }
 
-  _turnOn(id, brightness) {
-    var payload;
-    if (!brightness || brightness === 0) {
-      logger('no brightness specified, setting to previous known.');
-      payload = Buffer.from((id).toString(16).padStart(2, '0') + '0110009701', 'hex');
-    } else {
-      logger('brightness is ' + brightness);
-      brightness = brightness << 8 | brightness;
-      payload = Buffer.from((id).toString(16).padStart(2, '0') + '0110009801' + (brightness).toString(16).padStart(4, '0'), 'hex');
-    }
+  turnOn(id, command) {
+    logger(`Turn on device ${id}.` + (command.brightness != null ? `Brightness: ${command.brightness}` : ''));
 
+    let payload;
+    if (command.brightness == null) {
+      payload = this.createPayload(id, '0110009701');
+    } else {
+      const hByte = (command.brightness << 8) & 0xFF00;
+      const lByte = (command.brightness & 0x00FF);
+      payload = this.createPayload(id, '0110009801', (hByte | lByte) & 0xFFFF);
+    }
     this.writeQueue.unshift(payload);
   }
 
   turnOff(id, command) {
-    logger('turning off ' + id);
+    logger(`Turn off device ${id}`);
 
-    if (command.transition) {
-      // we have a transition time, split the target brightness (which will be 0)
-      // into pieces spread of the transition time
-      const initialBrightness = this.plejdDevices[id] ? this.plejdDevices[id].dim : 250;
-      console.log('initial brightness for ' + id + ' is ' + initialBrightness);
-
-      const steps = command.transition * 2;
-      const brightnessStep = initialBrightness / steps;
-      let currentBrightness = initialBrightness;
-
-      let i = 0;
-      const transitionRef = setInterval(() => {
-        currentBrightness = parseInt(initialBrightness - (brightnessStep * i));
-        if (currentBrightness <= 0 || i >= steps) {
-          clearInterval(transitionRef);
-
-          // finally, we turn it off
-          this._turnOff(id);
-          return;
-        }
-
-        this._turnOn(id, currentBrightness);
-
-        i++;
-      }, 500);
-    } else {
-      this._turnOff(id);
-    }
-  }
-
-  _turnOff(id) {
-    var payload = Buffer.from((id).toString(16).padStart(2, '0') + '0110009700', 'hex');
-    this.writeQueue.unshift(payload);
+    this.writeQueue.unshift(
+      this.createPayload(id, '0110009700')
+    );
   }
 
   triggerScene(sceneIndex) {
@@ -324,15 +272,10 @@ class PlejdService extends EventEmitter {
 
   async authenticate() {
     console.log('authenticate()');
-    const self = this;
-
     try {
-      //logger('sending challenge to device');
       await this.characteristics.auth.WriteValue([0], {});
-      //logger('reading response from device');
       const challenge = await this.characteristics.auth.ReadValue({});
       const response = this._createChallengeResponse(this.cryptoKey, Buffer.from(challenge));
-      //logger('responding to authenticate');
       await this.characteristics.auth.WriteValue([...response], {});
     } catch (err) {
       console.log('plejd-ble: error: failed to authenticate: ' + err);
@@ -376,17 +319,17 @@ class PlejdService extends EventEmitter {
   }
 
   async startPing() {
-    console.log('startPing()');
+    console.log('start Ping <> Pong');
     clearInterval(this.pingRef);
 
     this.pingRef = setInterval(async () => {
-      logger('ping');
+      // logger('ping');
       await this.ping();
     }, 3000);
   }
 
   onPingSuccess(nr) {
-    logger('pong: ' + nr);
+    // logger('pong: ' + nr);
   }
 
   async onPingFailed(error) {
@@ -398,7 +341,7 @@ class PlejdService extends EventEmitter {
   }
 
   async ping() {
-    logger('ping()');
+    // logger('ping()');
 
     var ping = crypto.randomBytes(1);
     let pong = null;
@@ -552,56 +495,26 @@ class PlejdService extends EventEmitter {
       return;
     }
 
-    const data = value.value;
-    const decoded = this._encryptDecrypt(this.cryptoKey, this.plejdService.addr, data);
-
-    let state = 0;
-    let dim = 0;
-    let device = parseInt(decoded[0], 10);
-
+    const decoded = this._encryptDecrypt(this.cryptoKey, this.plejdService.addr, value.value);
     if (decoded.length < 5) {
       // ignore the notification since too small
       return;
     }
 
+    let device = parseInt(decoded[0], 10);
     const cmd = decoded.toString('hex', 3, 5);
-
-    if (debug) {
-      logger('raw event received: ' + decoded.toString('hex'));
-    }
-
     if (cmd === BLE_CMD_DIM_CHANGE || cmd === BLE_CMD_DIM2_CHANGE) {
-      state = parseInt(decoded.toString('hex', 5, 6), 10);
-      dim = parseInt(decoded.toString('hex', 6, 8), 16) >> 8;
-
-      this.plejdDevices[device] = {
-        state: state,
-        dim: dim
-      };
-
-      logger('d: ' + device + ' got state+dim update: ' + state + ' - ' + dim);
-      this.emit('stateChanged', device, {
-        state: state,
-        brightness: dim
-      });
-
-      return;
+      const state = parseInt(decoded.toString('hex', 5, 6), 10);
+      const brightness = parseInt(decoded.toString('hex', 6, 8), 16) >> 8;
+      this.emit('stateChanged', device, { state, brightness });
     } else if (cmd === BLE_CMD_STATE_CHANGE) {
-      state = parseInt(decoded.toString('hex', 5, 6), 10);
-
-      logger('d: ' + device + ' got state update: ' + state);
-      this.emit('stateChanged', device, {
-        state: state
-      });
+      const state = parseInt(decoded.toString('hex', 5, 6), 10);
+      this.emit('stateChanged', device, { state });
     } else if (cmd === BLE_CMD_SCENE_TRIG) {
       const scene = parseInt(decoded.toString('hex', 5, 6), 10);
       this.emit('sceneTriggered', device, scene);
     }
 
-    this.plejdDevices[device] = {
-      state: state,
-      dim: 0
-    };
   }
 
   wireEvents() {

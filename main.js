@@ -71,7 +71,7 @@ async function main() {
 
         // subscribe to changes from Plejd
         plejd.on('stateChanged', (deviceId, command) => {
-          client.updateState(deviceId, command);
+          client.updateState(deviceId, command, true);
         });
 
         plejd.on('sceneTriggered', (deviceId, scene) => {
@@ -82,7 +82,9 @@ async function main() {
         client.on('stateChanged', (device, command) => {
           const deviceId = device.id;
 
-          if (device.typeName === 'Scene') {
+          console.log(`stateChanged: ${JSON.stringify({ command, device })}`)
+
+          if (device.type == 'scene') {
             // we're triggering a scene, lets do that and jump out.
             // since scenes aren't "real" devices.
             plejd.triggerScene(device.id);
@@ -102,9 +104,7 @@ async function main() {
             // since the switch doesn't get any updates on whether it's on or not,
             // we fake this by directly send the updateState back to HA in order for
             // it to change state.
-            client.updateState(deviceId, {
-              state: state === 'ON' ? 1 : 0
-            });
+            // client.updateState(deviceId, { state: state === 'ON' ? 1 : 0 }, false);
           } else {
             state = command.state;
             commandObj = command;
@@ -118,6 +118,7 @@ async function main() {
         });
 
         client.on('settingsChanged', (settings) => {
+          console.log(JSON.stringify(settings))
           if (settings.module === 'mqtt') {
             client.updateSettings(settings);
           } else if (settings.module === 'ble') {

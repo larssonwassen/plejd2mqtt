@@ -1,6 +1,7 @@
 const axios = require('axios');
 const EventEmitter = require('events');
 const _ = require('lodash');
+const fs = require('fs')
 
 API_APP_ID = 'zHtVqXt8k4yFyk2QGmgp48D9xZr2G94xWYnF4dak';
 API_BASE_URL = 'https://cloud.plejd.com/parse/';
@@ -169,7 +170,7 @@ class PlejdApi extends EventEmitter {
 
     // Just log the devices if debug logging enabled
     if (debug) {
-      logger(JSON.stringify(this.site));
+      fs.writeFileSync('/plejd/site.json', JSON.stringify(this.site))
     }
 
     const roomDevices = {};
@@ -178,159 +179,38 @@ class PlejdApi extends EventEmitter {
       const device = this.site.devices[i];
       const deviceId = device.deviceId;
 
-      const settings = this.site.outputSettings.find(x => x.deviceParseId == device.objectId);
-      let deviceNum = this.site.deviceAddress[deviceId];
-
-      if (settings) {
-        const outputs = this.site.outputAddress[deviceId];
-        deviceNum = outputs[settings.output];
-      }
+      const outputSettings = this.site.outputSettings.find(x => x.deviceParseId == device.objectId);
+      const deviceNum = outputSettings ? this.site.outputAddress[deviceId][outputSettings.output] : this.site.deviceAddress[deviceId];
 
       // check if device is dimmable
       const plejdDevice = this.site.plejdDevices.find(x => x.deviceId == deviceId);
-      let { name, type, dimmable } = this._getDeviceType(plejdDevice.hardwareId);
 
-      if (settings) {
-        dimmable = settings.dimCurve != 'NonDimmable';
-      }
-
-      const newDevice = {
+      devices.push({
         id: deviceNum,
         name: device.title,
-        type: type,
-        typeName: name,
-        dimmable: dimmable,
+        type: device.outputType == 'LIGHT' ? 'light' : (device.outputType == 'RELAY' ? 'switch' : 'switch'),
+        typeName: plejdDevice.firmware.notes,
+        outputIndex: outputSettings?.output || 0,
+        dimmable: device.outputType == 'LIGHT' && outputSettings && outputSettings.dimCurve != 'NonDimmable' && outputSettings.dimCurve != 'RelayNormal',
         version: plejdDevice.firmware.version,
-        serialNumber: plejdDevice.deviceId
-      };
-
-      if (newDevice.typeName === 'WPH-01') {
-        // WPH-01 is special, it has two buttons which needs to be
-        // registered separately.
-        const inputs = this.site.inputAddress[deviceId];
-        const first = inputs[0];
-        const second = inputs[1];
-
-        let switchDevice = {
-          id: first,
-          name: device.title + ' knapp vä',
-          type: type,
-          typeName: name,
-          dimmable: dimmable,
-          version: plejdDevice.firmware.version,
-          serialNumber: plejdDevice.deviceId
-        };
-
-        if (roomDevices[device.roomId]) {
-          roomDevices[device.roomId].push(switchDevice);
-        }
-        else {
-          roomDevices[device.roomId] = [switchDevice];
-        }
-        devices.push(switchDevice);
-
-        switchDevice = {
-          id: second,
-          name: device.title + ' knapp hö',
-          type: type,
-          typeName: name,
-          dimmable: dimmable,
-          version: plejdDevice.firmware.version,
-          serialNumber: plejdDevice.deviceId
-        };
-
-        if (roomDevices[device.roomId]) {
-          roomDevices[device.roomId].push(switchDevice);
-        }
-        else {
-          roomDevices[device.roomId] = [switchDevice];
-        }
-        devices.push(switchDevice);
-      }
-      else {
-        if (roomDevices[device.roomId]) {
-          roomDevices[device.roomId].push(newDevice);
-        }
-        else {
-          roomDevices[device.roomId] = [newDevice];
-        }
-
-        devices.push(newDevice);
-      }
-    }
-
-    if (this.includeRoomsAsLights) {
-      logger('includeRoomsAsLights is set to true, adding rooms too.');
-      for (let i = 0; i < this.site.rooms.length; i++) {
-        const room = this.site.rooms[i];
-        const roomId = room.roomId;
-        const roomAddress = this.site.roomAddress[roomId];
-
-        const newDevice = {
-          id: roomAddress,
-          name: room.title,
-          type: 'light',
-          typeName: 'Room',
-          dimmable: roomDevices[roomId].find(x => x.dimmable).length > 0
-        };
-
-        devices.push(newDevice);
-      }
+        serialNumber: plejdDevice.deviceId,
+        room: this.site.rooms.find(x => x.roomId == device.roomId),
+      });
     }
 
     // add scenes as switches
     const scenes = this.site.scenes.filter(x => x.hiddenFromSceneList == false);
 
     for (const scene of scenes) {
-      const sceneNum = this.site.sceneIndex[scene.sceneId];
-      const newScene = {
-        id: sceneNum,
+      devices.push({
+        id: this.site.sceneIndex[scene.sceneId],
         name: scene.title,
-        type: 'switch',
+        type: 'scene',
         typeName: 'Scene',
-        dimmable: false,
-        version: '1.0',
-        serialNumber: scene.objectId
-      };
-
-      devices.push(newScene);
+      });
     }
 
     return devices;
-  }
-
-  _getDeviceType(hardwareId) {
-    switch (parseInt(hardwareId)) {
-      case 1:
-      case 11:
-      case 14:
-        return { name: "DIM-01", type: 'light', dimmable: true };
-      case 2:
-        return { name: "DIM-02", type: 'light', dimmable: true };
-      case 3:
-        return { name: "CTR-01", type: 'light', dimmable: false };
-      case 4:
-        return { name: "GWY-01", type: 'sensor', dimmable: false };
-      case 5:
-        return { name: "LED-10", type: 'light', dimmable: true };
-      case 6:
-        return { name: "WPH-01", type: 'switch', dimmable: false };
-      case 7:
-        return { name: "REL-01", type: 'switch', dimmable: false };
-      
-      case 13:
-        return { name: "Generic", type: 'light', dimmable: false };
-      case 17:
-        return { name: "REL-01", type: 'switch', dimmable: false };
-      case 18:
-        return { name: "REL-02", type: 'switch', dimmable: false };
-      case 8:
-      case 20:
-        return { name: "SPR-01", type: 'switch', dimmable: false };
-      default:
-	logger(`HW-id ${hardwareId} is unknown`);
-	return { name: "-unknown-", type: 'light', dimmable: false };
-    }
   }
 }
 
